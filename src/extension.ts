@@ -85,7 +85,15 @@ function debounce<T extends (...args: any[]) => any>(
     };
 }
 
+// 歌词源映射
+const lyricSourceMap = {
+    LrcLib: fetchFromLrcLib,
+    Netease: fetchFromNetease,
+    QQMusic: fetchFromQQMusic
+};
+
 export function activate(context: vscode.ExtensionContext) {
+    console.log('Now Playing Lyrics extension activated');
     // Create status bar item with highest priority (closest to the right)
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
     statusBarItem.name = "Now Playing Lyrics";
@@ -166,7 +174,7 @@ export function activate(context: vscode.ExtensionContext) {
         try {
             console.log('Checking for current track...');
             const track = await getCurrentTrack();
-            
+
             if (!track) {
                 console.log('No track returned');
                 if (currentTrack !== null) {
@@ -189,7 +197,7 @@ export function activate(context: vscode.ExtensionContext) {
             // Check if song has changed
             const trackId = `${track.artist}-${track.title}`;
             console.log('Track ID:', trackId, 'Last Track ID:', lastTrackId);
-            
+
             if (trackId !== lastTrackId) {
                 console.log('Song changed, fetching new lyrics');
                 lastTrackId = trackId;
@@ -211,7 +219,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                     console.log('Fetching fresh lyrics');
                     const lyricsResult = await fetchSynchronizedLyrics(track.artist, track.title);
-                    
+
                     // Cache the result
                     lyricsCache.set(trackId, {
                         syncedLyrics: lyricsResult.syncedLyrics,
@@ -253,8 +261,8 @@ export function activate(context: vscode.ExtensionContext) {
         } catch (error) {
             console.error('Error in update interval:', error);
             if (error instanceof Error && (
-                error.message.includes('not allowed') || 
-                error.message.includes('permission') || 
+                error.message.includes('not allowed') ||
+                error.message.includes('permission') ||
                 error.message.includes('authorized') ||
                 error.message.includes('timed out')
             )) {
@@ -307,6 +315,28 @@ Click Allow when macOS asks for permission. You can manage these anytime in Syst
     } else {
         startUpdateInterval();
     }
+    // new command: select lyric source order
+    context.subscriptions.push(vscode.commands.registerCommand('nowPlayingLyrics.selectLyricSourceOrder', async () => {
+        const config = vscode.workspace.getConfiguration();
+        const picks = ["LrcLib", "Netease", "QQMusic"];
+        let remaining = [...picks];
+        let order: string[] = [];
+        for (let i = 0; i < picks.length; i++) {
+            const pick = await vscode.window.showQuickPick(remaining, {
+                placeHolder: `Select #${i + 1} lyric source (highest priority first)`,
+                ignoreFocusOut: true
+            });
+            if (!pick) {
+                vscode.window.showInformationMessage('Cancelled lyric source order selection.');
+                return;
+            }
+            order.push(pick);
+            remaining = remaining.filter(p => p !== pick);
+        }
+        console.log('update nowPlayingLyrics.lyricSourceOrder:', order);
+        await config.update('nowPlayingLyrics.lyricSourceOrder', order, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage('Lyric source order updated!');
+    }));
 
     // Register the permission help command
     context.subscriptions.push(vscode.commands.registerCommand('nowPlayingLyrics.showPermissionHelp', async () => {
@@ -331,6 +361,8 @@ Would you like to open System Settings now?`;
             await vscode.env.openExternal(vscode.Uri.parse('https://github.com/maniyadv/vscode-now-playing-lyrics#permissions'));
         }
     }));
+
+
 
     context.subscriptions.push(
         { dispose: () => { if (updateInterval) clearInterval(updateInterval); } }
@@ -454,34 +486,32 @@ async function getCurrentTrack(): Promise<CurrentTrack | null> {
     }
 }
 
+// 支持按配置顺序选择歌词源
 async function fetchSynchronizedLyrics(artist: string, title: string): Promise<{ syncedLyrics: LyricLine[]; plainLyrics: string }> {
-    const sources = [
-        fetchFromLrcLib,
-        fetchFromNetease,
-        fetchFromQQMusic
-    ];
-
+    const config = vscode.workspace.getConfiguration();
+    const order: string[] = config.get('nowPlayingLyrics.lyricSourceOrder', ["LrcLib", "Netease", "QQMusic"]);
+    const sources = order.map(name => lyricSourceMap[name as keyof typeof lyricSourceMap]);
     let lastError: Error | null = null;
-
-    // Try each source in sequence
     for (const source of sources) {
         try {
-            const result = await source(artist, title);
-            if (result.syncedLyrics.length > 0) {
-                return result;
+            const result = await Promise.race([
+                source(artist, title),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Network timeout')), 8000))
+            ]);
+            if ((result as any).syncedLyrics?.length > 0) {
+                return result as { syncedLyrics: LyricLine[]; plainLyrics: string };
             }
         } catch (error) {
             console.error(`Error fetching from source:`, error);
             lastError = error instanceof Error ? error : new Error(String(error));
         }
     }
-
     throw lastError || new Error('No lyrics found in any source');
 }
 
 async function fetchFromLrcLib(artist: string, title: string): Promise<{ syncedLyrics: LyricLine[]; plainLyrics: string }> {
     console.log(`Searching lrclib for: ${title} - ${artist}`);
-    
+
     const searchResponse = await axios.get('https://lrclib.net/api/search', {
         params: {
             track_name: title,
@@ -496,7 +526,7 @@ async function fetchFromLrcLib(artist: string, title: string): Promise<{ syncedL
 
     // Sort and try each result
     const sortedResults = sortSearchResults(searchResults, artist, title);
-    
+
     for (const result of sortedResults) {
         try {
             const lyricsResponse = await axios.get(`https://lrclib.net/api/get/${result.id}`);
@@ -516,13 +546,13 @@ async function fetchFromLrcLib(artist: string, title: string): Promise<{ syncedL
             continue;
         }
     }
-    
+
     throw new Error('No synchronized lyrics found on lrclib');
 }
 
 async function fetchFromNetease(artist: string, title: string): Promise<{ syncedLyrics: LyricLine[]; plainLyrics: string }> {
     console.log(`Searching Netease for: ${title} - ${artist}`);
-    
+
     try {
         // First search for the song
         const searchResponse = await axios.get('https://netease-cloud-music-api-psi-silk.vercel.app/search', {
@@ -537,10 +567,10 @@ async function fetchFromNetease(artist: string, title: string): Promise<{ synced
         }
 
         const songId = searchResponse.data.result.songs[0].id;
-        
+
         // Then fetch lyrics
         const lyricsResponse = await axios.get(`https://netease-cloud-music-api-psi-silk.vercel.app/lyric?id=${songId}`);
-        
+
         if (!lyricsResponse.data?.lrc?.lyric) {
             throw new Error('No lyrics found on Netease');
         }
@@ -575,7 +605,7 @@ async function fetchFromNetease(artist: string, title: string): Promise<{ synced
 
 async function fetchFromQQMusic(artist: string, title: string): Promise<{ syncedLyrics: LyricLine[]; plainLyrics: string }> {
     console.log(`Searching QQ Music for: ${title} - ${artist}`);
-    
+
     try {
         // First search for the song
         const searchResponse = await axios.get('https://c.y.qq.com/soso/fcgi-bin/client_search_cp', {
@@ -593,7 +623,7 @@ async function fetchFromQQMusic(artist: string, title: string): Promise<{ synced
 
         const song = searchResponse.data.data.song.list[0];
         const songmid = song.songmid;
-        
+
         // Then fetch lyrics
         const lyricsResponse = await axios.get(`https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg`, {
             params: {
@@ -605,7 +635,7 @@ async function fetchFromQQMusic(artist: string, title: string): Promise<{ synced
                 Referer: 'https://y.qq.com'
             }
         });
-        
+
         if (!lyricsResponse.data?.lyric) {
             throw new Error('No lyrics found on QQ Music');
         }
@@ -673,11 +703,11 @@ function cleanLyrics(text: string): string {
     const cleanedLines = lines.filter(line => {
         const lowercaseLine = line.toLowerCase();
         return !lowercaseLine.includes('作词') &&
-               !lowercaseLine.includes('作曲') &&
-               !lowercaseLine.includes('编曲') &&
-               !lowercaseLine.includes('producer') &&
-               !lowercaseLine.includes('composer') &&
-               !lowercaseLine.includes('lyricist');
+            !lowercaseLine.includes('作曲') &&
+            !lowercaseLine.includes('编曲') &&
+            !lowercaseLine.includes('producer') &&
+            !lowercaseLine.includes('composer') &&
+            !lowercaseLine.includes('lyricist');
     });
     return cleanedLines.join('\n');
 }
@@ -741,4 +771,4 @@ function updatePanel() {
     }
 }
 
-export function deactivate() {}
+export function deactivate() { }

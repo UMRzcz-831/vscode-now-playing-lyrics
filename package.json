@@ -27,8 +27,35 @@
             {
                 "command": "nowPlayingLyrics.showPanel",
                 "title": "Show Now Playing Lyrics"
+            },
+            {
+                "command": "nowPlayingLyrics.selectLyricSourceOrder",
+                "title": "Select Preferred Lyric Source Order"
             }
-        ]
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "Now Playing Lyrics Configuration",
+            "properties": {
+                "nowPlayingLyrics.lyricSourceOrder": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "LrcLib",
+                            "Netease",
+                            "QQMusic"
+                        ]
+                    },
+                    "default": [
+                        "LrcLib",
+                        "Netease",
+                        "QQMusic"
+                    ],
+                    "description": "Preferred order of lyric sources. Drag to reorder."
+                }
+            }
+        }
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
