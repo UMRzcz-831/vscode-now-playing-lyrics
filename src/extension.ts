@@ -56,6 +56,7 @@ let statusBarItem: vscode.StatusBarItem;
 let currentPanel: vscode.WebviewPanel | undefined = undefined;
 let currentTrack: CurrentTrack | null = null;
 let fullLyrics: string = '';
+let currentLyricSource: string | undefined = undefined;
 
 // Global state to track last error time and type
 let lastErrorTime = 0;
@@ -85,7 +86,7 @@ function debounce<T extends (...args: any[]) => any>(
     };
 }
 
-// 歌词源映射
+// lyric source map
 const lyricSourceMap = {
     LrcLib: fetchFromLrcLib,
     Netease: fetchFromNetease,
@@ -219,6 +220,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                     console.log('Fetching fresh lyrics');
                     const lyricsResult = await fetchSynchronizedLyrics(track.artist, track.title);
+                    currentLyricSource = lyricsResult.usedSource;
 
                     // Cache the result
                     lyricsCache.set(trackId, {
@@ -244,6 +246,7 @@ export function activate(context: vscode.ExtensionContext) {
                     statusBarItem.tooltip = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
                     currentLyrics = [];
                     fullLyrics = '';
+                    currentLyricSource = undefined;
                     updatePanel();
                 }
             }
@@ -275,6 +278,7 @@ export function activate(context: vscode.ExtensionContext) {
                 clearLyricsState();
                 currentTrack = null;
             }
+            currentLyricSource = undefined;
         }
     }, 500);
 
@@ -317,7 +321,7 @@ Click Allow when macOS asks for permission. You can manage these anytime in Syst
     }
     // new command: select lyric source order
     context.subscriptions.push(vscode.commands.registerCommand('nowPlayingLyrics.selectLyricSourceOrder', async () => {
-        const config = vscode.workspace.getConfiguration();
+        const config = vscode.workspace.getConfiguration(undefined, null);
         const picks = ["LrcLib", "Netease", "QQMusic"];
         let remaining = [...picks];
         let order: string[] = [];
@@ -336,6 +340,11 @@ Click Allow when macOS asks for permission. You can manage these anytime in Syst
         console.log('update nowPlayingLyrics.lyricSourceOrder:', order);
         await config.update('nowPlayingLyrics.lyricSourceOrder', order, vscode.ConfigurationTarget.Global);
         vscode.window.showInformationMessage('Lyric source order updated!');
+        // 重新获取歌词
+        if (currentTrack && currentTrack.isPlaying) {
+            lastTrackId = '';
+            debouncedUpdate();
+        }
     }));
 
     // Register the permission help command
@@ -486,20 +495,20 @@ async function getCurrentTrack(): Promise<CurrentTrack | null> {
     }
 }
 
-// 支持按配置顺序选择歌词源
-async function fetchSynchronizedLyrics(artist: string, title: string): Promise<{ syncedLyrics: LyricLine[]; plainLyrics: string }> {
-    const config = vscode.workspace.getConfiguration();
-    const order: string[] = config.get('nowPlayingLyrics.lyricSourceOrder', ["LrcLib", "Netease", "QQMusic"]);
-    const sources = order.map(name => lyricSourceMap[name as keyof typeof lyricSourceMap]);
+// support selecting lyric source order, return the actual used source name
+async function fetchSynchronizedLyrics(artist: string, title: string): Promise<{ syncedLyrics: LyricLine[]; plainLyrics: string; usedSource?: string }> {
+    const config = vscode.workspace.getConfiguration(undefined, null);
+    const inspected = config.inspect('nowPlayingLyrics.lyricSourceOrder');
+    const order: string[] = Array.isArray(inspected?.globalValue) ? inspected.globalValue as string[] : ["LrcLib", "Netease", "QQMusic"];
     let lastError: Error | null = null;
-    for (const source of sources) {
+    for (const sourceName of order) {
         try {
             const result = await Promise.race([
-                source(artist, title),
+                lyricSourceMap[sourceName as keyof typeof lyricSourceMap](artist, title),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('Network timeout')), 8000))
             ]);
             if ((result as any).syncedLyrics?.length > 0) {
-                return result as { syncedLyrics: LyricLine[]; plainLyrics: string };
+                return { ...result as { syncedLyrics: LyricLine[]; plainLyrics: string }, usedSource: sourceName };
             }
         } catch (error) {
             console.error(`Error fetching from source:`, error);
@@ -712,7 +721,7 @@ function cleanLyrics(text: string): string {
     return cleanedLines.join('\n');
 }
 
-function getWebviewContent(title: string, artist: string, lyrics: string): string {
+function getWebviewContent(title: string, artist: string, lyrics: string, source?: string): string {
     return `<!DOCTYPE html>
     <html lang="en">
     <head>
@@ -739,6 +748,15 @@ function getWebviewContent(title: string, artist: string, lyrics: string): strin
                 font-size: 1.2em;
                 color: var(--vscode-descriptionForeground);
             }
+            .source {
+                font-size: 1em;
+                color: var(--vscode-descriptionForeground);
+                background: var(--vscode-editorWidget-background, #eee);
+                border-radius: 4px;
+                padding: 2px 8px;
+                margin-top: 6px;
+                display: inline-block;
+            }
             .lyrics {
                 white-space: pre-wrap;
                 color: var(--vscode-editor-foreground);
@@ -754,6 +772,7 @@ function getWebviewContent(title: string, artist: string, lyrics: string): strin
         <div class="song-info">
             <div class="title">${title}</div>
             <div class="artist">${artist}</div>
+            ${source ? `<div class="source">Lyric Source: ${source}</div>` : ''}
         </div>
         <div class="lyrics">${lyrics}</div>
     </body>
@@ -766,7 +785,8 @@ function updatePanel() {
         currentPanel.webview.html = getWebviewContent(
             currentTrack?.title || '',
             currentTrack?.artist || '',
-            fullLyrics || ''
+            fullLyrics || '',
+            currentLyricSource
         );
     }
 }
