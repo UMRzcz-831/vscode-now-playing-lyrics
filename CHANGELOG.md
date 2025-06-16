@@ -18,7 +18,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - Fixed issues with command registration and activation events for custom commands.
-- Fixed bugs where only the first lyric source latency was shown on first load.
 - Improved robustness of lyric fetching and caching logic.
 
 ---
