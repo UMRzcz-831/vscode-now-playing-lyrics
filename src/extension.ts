@@ -323,11 +323,17 @@ Click Allow when macOS asks for permission. You can manage these anytime in Syst
     context.subscriptions.push(vscode.commands.registerCommand('nowPlayingLyrics.selectLyricSourceOrder', async () => {
         const config = vscode.workspace.getConfiguration(undefined, null);
         const picks = ["LrcLib", "Netease", "QQMusic"];
+        const inspected = config.inspect('nowPlayingLyrics.lyricSourceOrder');
+        const currentOrder: string[] = Array.isArray(inspected?.globalValue) ? inspected.globalValue as string[] : picks;
         let remaining = [...picks];
         let order: string[] = [];
         for (let i = 0; i < picks.length; i++) {
+            const placeHolder =
+                i === 0
+                    ? `Current order: ${currentOrder.join(' > ')}\n Select #${i + 1} lyric source (highest priority first)`
+                    : `Select #${i + 1} lyric source (highest priority first)`;
             const pick = await vscode.window.showQuickPick(remaining, {
-                placeHolder: `Select #${i + 1} lyric source (highest priority first)`,
+                placeHolder,
                 ignoreFocusOut: true
             });
             if (!pick) {
