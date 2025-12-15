@@ -65,10 +65,19 @@ const ERROR_COOLDOWN_MS = 30000; // Increase cooldown to 30 seconds
 
 // Simple function to update status bar text
 function updateStatusBarText(text: string, tooltip?: string) {
-  statusBarItem.text = ` 🎵  ${text}   `;
+  statusBarItem.text = ` 🎵  ${decodeHTMLEntities(text)}   `;
   if (tooltip) {
     statusBarItem.tooltip = tooltip;
   }
+}
+
+function decodeHTMLEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
 }
 
 // Add a debounce to prevent too frequent updates
@@ -928,7 +937,8 @@ function findCurrentLyricLine(
 
 function cleanLyrics(text: string): string {
   // Remove credits and metadata lines
-  const lines = text.split("\n");
+  const decodedText = decodeHTMLEntities(text);
+  const lines = decodedText.split("\n");
   const cleanedLines = lines.filter((line) => {
     const lowercaseLine = line.toLowerCase();
     return (
